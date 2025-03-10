@@ -1,0 +1,23 @@
+{
+  "name": "audio-connector-elevenlabs",
+  "version": "1.0.0",
+  "description": "audio connector gc => 11labs",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcphee11/audio-connector-elevenlabs.git"
+  },
+  "author": "matt mcphee",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mcphee11/audio-connector-elevenlabs/issues"
+  },
+  "homepage": "https://github.com/mcphee11/audio-connector-elevenlabs#readme",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "ws": "^8.18.1"
+  }
+}
