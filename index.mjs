@@ -1,79 +1,118 @@
 import { WebSocketServer, WebSocket } from 'ws'
 import dotenv from 'dotenv'
+import http from 'http'
 
 // Load environment variables from .env file
 dotenv.config()
 
 const AH_port = 8081
-const genesysWs = new WebSocketServer({ port: AH_port })
-
+const MAXIMUM_BINARY_MESSAGE_SIZE = 64000
 const AGENT_ID = process.env.AGENT_ID
-const API_KEY = process.env.API_KEY
+const API_KEY = process.env.API_KEY // required for private access
+const public_access = process.env.PUBLIC_ACCESS || true
+let genesysWs = null
 let elevenLabsWs = null
+let clientseq = 0
+let seq = 1
+let parsedMessageId = ''
+let socketId = 1
 
+const server = http.createServer((req, res) => {
+  if (req.url === '/1234') {
+    // correct GET based on Genesys Cloud architect "Connector ID"
+    console.log('GET /1234')
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+  } else {
+    res.writeHead(404)
+    res.end('Not Found')
+  }
+})
+
+server.listen(AH_port, () => {
+  console.log(`HTTP Server listening on port ${AH_port}`)
+})
+
+genesysWs = new WebSocketServer({ server })
 genesysWs.on('connection', (ws) => {
+  setupElevenLabs()
   console.log(`Client connected`)
+  ws.id = socketId
 
   ws.on('message', (message) => {
     // types of messages
     try {
       const parsedMessage = JSON.parse(message)
-      if (parsedMessage.type === 'ping') {
-        console.log(`Received PING: ${message.toString()}`)
-        let msg = {
-          version: '2',
-          type: 'pong',
-          seq: parsedMessage.seq,
-          clientseq: parsedMessage.serverseq + 1,
-          id: parsedMessage.id,
-          parameters: {},
-        }
-        console.log(`Sending PONG: ${JSON.stringify(msg)}`)
-        ws.send(JSON.stringify(msg))
-        return
-      }
-      if (parsedMessage.type === 'open') {
-        console.log(`Received OPEN: ${message.toString()}`)
-        let msg = {
-          version: '2',
-          type: 'opened',
-          seq: parsedMessage.seq,
-          clientseq: parsedMessage.serverseq + 1,
-          id: parsedMessage.id,
-          parameters: {
-            media: [{ type: 'audio', format: 'PCMU', channels: ['external'], rate: 8000 }],
-          },
-        }
-        console.log(`Sending OPENED: ${JSON.stringify(msg)}`)
-        ws.send(JSON.stringify(msg))
-        return
-      }
-      if (parsedMessage.type === 'close') {
-        console.log(`Received PING: ${message.toString()}`)
-        let msg = {
-          version: '2',
-          type: 'closed',
-          seq: parsedMessage.seq,
-          clientseq: parsedMessage.serverseq + 1,
-          id: parsedMessage.id,
-          parameters: {},
-        }
-        console.log(`Sending CLOSED: ${JSON.stringify(msg)}`)
-        ws.send(JSON.stringify(msg))
-        return
-      } else {
-        console.error(`Received ERROR: ${message.toString()}`)
-        return
+      parsedMessageId = parsedMessage.id
+      switch (parsedMessage.type) {
+        case 'ping':
+          console.log(`Received PING: ${message.toString()}`)
+          let msgPing = {
+            version: '2',
+            type: 'pong',
+            seq: seq++,
+            clientseq: clientseq++,
+            id: parsedMessage.id,
+            parameters: {},
+          }
+          console.log(`Sending PONG: ${JSON.stringify(msgPing)}`)
+          ws.send(JSON.stringify(msgPing))
+          break
+        case 'open':
+          console.log(`Received OPEN: ${message.toString()}`)
+          let msgOpen = {
+            version: '2',
+            type: 'opened',
+            seq: seq++,
+            clientseq: clientseq++,
+            id: parsedMessage.id,
+            parameters: {
+              media: [{ type: 'audio', format: 'PCMU', channels: ['external'], rate: 8000 }],
+            },
+          }
+          console.log(`Sending OPENED: ${JSON.stringify(msgOpen)}`)
+          ws.send(JSON.stringify(msgOpen))
+          break
+        case 'playback_started':
+          console.log(`Received playback_started: ${message.toString()}`)
+          break
+        case 'playback_completed':
+          console.log(`Received playback_completed: ${message.toString()}`)
+          break
+        case 'close':
+          console.log(`Received PING: ${message.toString()}`)
+          let msgClose = {
+            version: '2',
+            type: 'closed',
+            seq: seq++,
+            clientseq: clientseq++,
+            id: parsedMessage.id,
+            parameters: {},
+          }
+          console.log(`Sending CLOSED: ${JSON.stringify(msgClose)}`)
+          ws.send(JSON.stringify(msgClose))
+          break
+        case 'update':
+          // not handled currently
+          console.warn(`Received UPDATE: ${message.toString()}`)
+        default:
+          console.error(`Received ERROR: ${message.toString()}`)
       }
     } catch (e) {
       // STREAMING DATA
-      console.log('received data')
-      elevenLabsWs.send(JSON.stringify(message))
+      if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
+        const base64 = Buffer.from(message).toString('base64')
+        const payload = {
+          user_audio_chunk: base64,
+        }
+        elevenLabsWs.send(JSON.stringify(payload))
+        console.log(`Sending to ElevenLabs`)
+      }
     }
   })
 
   ws.on('close', () => {
     console.log(`Client disconnected`)
+    elevenLabsWs.close()
   })
 
   ws.on('error', (error) => {
@@ -89,9 +128,13 @@ console.log(`Audio Hook WebSocket server started on port ${AH_port}`)
 // Set up ElevenLabs connection
 const setupElevenLabs = async () => {
   try {
-    //const signedUrl = await getSignedUrl()
-    //elevenLabsWs = new WebSocket(signedUrl)
-    elevenLabsWs = new WebSocket(`wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${AGENT_ID}`)
+    if (public_access) {
+      elevenLabsWs = new WebSocket(`wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${AGENT_ID}`)
+    }
+    if (!public_access) {
+      const signedUrl = await getSignedUrl()
+      elevenLabsWs = new WebSocket(signedUrl)
+    }
 
     elevenLabsWs.on('open', () => {
       console.log('[ElevenLabs] Connected to Conversational AI')
@@ -118,42 +161,29 @@ const setupElevenLabs = async () => {
             break
 
           case 'audio':
-            if (streamSid) {
-              if (message.audio?.chunk) {
-                const audioData = {
-                  event: 'media',
-                  streamSid,
-                  media: {
-                    payload: message.audio.chunk,
-                  },
+            console.log('[ElevenLabs] Received audio')
+            if (genesysWs) {
+              const targetClientId = socketId
+              const targetClient = Array.from(genesysWs.clients).find((client) => client.id === targetClientId)
+
+              if (targetClient && targetClient.readyState === WebSocket.OPEN) {
+                if (message.audio_event.audio_base_64.length <= MAXIMUM_BINARY_MESSAGE_SIZE) {
+                  console.log('sending in 1 message to specific GenesysWs client')
+                  let buffer = Buffer.from(message.audio_event.audio_base_64, 'base64')
+                  targetClient.send(buffer, { binary: true })
+                } else {
+                  let currentPosition = 0
+                  while (currentPosition < message.audio_event.audio_base_64.length) {
+                    const sendBytes = message.audio_event.audio_base_64.slice(currentPosition, currentPosition + MAXIMUM_BINARY_MESSAGE_SIZE)
+
+                    console.log(`Sending ${sendBytes.length} binary bytes in chunked message to specific GenesysWs client`)
+                    targetClient.send(sendBytes, { binary: true })
+                    currentPosition += MAXIMUM_BINARY_MESSAGE_SIZE
+                  }
                 }
-                genesysWs.send(JSON.stringify(audioData))
-              } else if (message.audio_event?.audio_base_64) {
-                const audioData = {
-                  event: 'media',
-                  streamSid,
-                  media: {
-                    payload: message.audio_event.audio_base_64,
-                  },
-                }
-                genesysWs.send(JSON.stringify(audioData))
               }
-            } else {
-              console.log('[ElevenLabs] Received audio but no StreamSid yet')
             }
             break
-
-          case 'interruption':
-            if (streamSid) {
-              ws.send(
-                JSON.stringify({
-                  event: 'clear',
-                  streamSid,
-                })
-              )
-            }
-            break
-
           case 'ping':
             if (message.ping_event?.event_id) {
               elevenLabsWs.send(
@@ -186,15 +216,30 @@ const setupElevenLabs = async () => {
     })
 
     elevenLabsWs.on('close', (disconnect) => {
-      console.log('[ElevenLabs] Disconnected: ', disconnect)
+      if (genesysWs) {
+        const targetClientId = socketId
+        const targetClient = Array.from(genesysWs.clients).find((client) => client.id === targetClientId)
+        console.log('[ElevenLabs] Disconnected: ', disconnect)
+
+        let msgDisconnect = {
+          version: '2',
+          type: 'disconnect',
+          seq: seq++,
+          clientseq: clientseq++,
+          id: parsedMessageId,
+          parameters: {
+            reason: 'completed',
+            outputVariables: {},
+          },
+        }
+        targetClient.send(JSON.stringify(msgDisconnect))
+        console.log(`Sending DISCONNECT to GenesysWs: ${JSON.stringify(msgDisconnect)}`)
+      }
     })
   } catch (error) {
     console.error('[ElevenLabs] Setup error:', error)
   }
 }
-
-// Set up ElevenLabs connection
-setupElevenLabs()
 
 // Helper function to get signed URL for authenticated conversations
 async function getSignedUrl() {
