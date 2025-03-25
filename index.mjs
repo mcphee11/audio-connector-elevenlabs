@@ -5,7 +5,7 @@ import http from 'http'
 // Load environment variables from .env file
 dotenv.config()
 
-const AH_port = 8081
+const AH_port = process.env.AH_PORT || 8081
 const MAXIMUM_BINARY_MESSAGE_SIZE = 64000
 const AGENT_ID = process.env.AGENT_ID
 const API_KEY = process.env.API_KEY // required for private access
