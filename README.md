@@ -43,7 +43,7 @@ Depending on if your agent is set to `Enable authentication` or not will depend 
 
 ## Server settings
 
-When running the server there are some environement variables that are used for the configuration:
+When running the server there are some environment variables that are used for the configuration:
 
 ```
 AH_PORT (optional - default 8081)
